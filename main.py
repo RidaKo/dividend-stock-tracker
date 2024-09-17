@@ -9,26 +9,30 @@ from PyQt5.QtGui import QTextDocument
 from PyQt5.QtWidgets import QHeaderView, QStyleOptionHeader, QStyle
 from PyQt5.QtGui import QTextDocument
 from PyQt5.QtCore import QRect, Qt
-import requests
 import pandas as pd
 import yfinance as yf
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 import matplotlib.pyplot as plt
 
-API_KEY = 'YOUR_API_KEY'  # Replace with your Alpha Vantage API key
+# Removed API_KEY and requests as we're using yfinance exclusively
 
 def get_stock_overview(symbol):
-    url = f'https://www.alphavantage.co/query?function=OVERVIEW&symbol={symbol}&apikey={API_KEY}'
-    response = requests.get(url)
-    data = response.json()
-    return data
+    stock = yf.Ticker(symbol)
+    try:
+        info = stock.info
+        return info
+    except Exception as e:
+        return {}
 
 def get_current_price(symbol):
     stock = yf.Ticker(symbol)
-    data = stock.history(period='1d')
-    if not data.empty:
-        return data['Close'][0]
-    else:
+    try:
+        data = stock.history(period='1d')
+        if not data.empty:
+            return data['Close'][0]
+        else:
+            return None
+    except Exception as e:
         return None
 
 def get_dividend_events(symbol):
@@ -171,7 +175,6 @@ class DividendTracker(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         # Adjust the row height to accommodate wrapped text
         self.table.horizontalHeader().setFixedHeight(60)
-
         # Connect double-click signal to open detailed view
         self.table.itemDoubleClicked.connect(self.open_stock_details)
 
@@ -224,15 +227,15 @@ class DividendTracker(QMainWindow):
 
         # Fetch data to validate symbol
         overview = get_stock_overview(symbol)
-        if 'Symbol' not in overview:
+        if not overview:
             QMessageBox.warning(self, 'Symbol Error', f'No data found for symbol: {symbol}')
             return
 
         # Add to portfolio
         self.portfolio.append({
             'symbol': symbol,
-            'company_name': overview.get('Name', ''),
-            'sector': overview.get('Sector', ''),
+            'company_name': overview.get('longName', ''),
+            'sector': overview.get('sector', ''),
             'shares': shares,
             'cost_basis': cost_basis,
             'total_dividends': 0.0
@@ -264,7 +267,7 @@ class DividendTracker(QMainWindow):
             # Fetch current price and dividend data
             current_price = get_current_price(symbol)
             overview = get_stock_overview(symbol)
-            if current_price is None or 'DividendPerShare' not in overview:
+            if current_price is None:
                 continue
 
             market_value = current_price * shares
@@ -273,7 +276,7 @@ class DividendTracker(QMainWindow):
             unrealized_gain_percent = (unrealized_gain / book_value) * 100 if book_value > 0 else 0
             total_return = (unrealized_gain + stock.get('total_dividends', 0.0)) / book_value * 100 if book_value > 0 else 0
 
-            dividend_per_share = float(overview['DividendPerShare']) if overview['DividendPerShare'] not in [None, 'None'] else 0.0
+            dividend_per_share = float(overview.get('dividendRate', 0.0)) if overview.get('dividendRate') else 0.0
             annual_dividend = dividend_per_share * shares
             dividend_yield = (dividend_per_share / current_price) * 100 if current_price > 0 else 0.0
 
@@ -416,8 +419,8 @@ class DividendTracker(QMainWindow):
 
             # Fetch company name and sector
             overview = get_stock_overview(symbol)
-            company_name = overview.get('Name', '')
-            sector = overview.get('Sector', '')
+            company_name = overview.get('longName', '')
+            sector = overview.get('sector', '')
 
             # Get exchange rate
             exchange_rate_str = row.get('Exchange rate', '')
@@ -600,7 +603,7 @@ class DividendTracker(QMainWindow):
 
             # Fetch dividend per share
             overview = get_stock_overview(symbol)
-            dividend_per_share = float(overview['DividendPerShare']) if overview.get('DividendPerShare') not in [None, 'None'] else 0.0
+            dividend_per_share = float(overview.get('dividendRate', 0.0)) if overview.get('dividendRate') else 0.0
 
             annual_dividend = dividend_per_share * shares
             total_annual_dividend += annual_dividend
@@ -631,7 +634,7 @@ class DividendTracker(QMainWindow):
 
             # Fetch dividend per share
             overview = get_stock_overview(symbol)
-            dividend_per_share = float(overview['DividendPerShare']) if overview.get('DividendPerShare') not in [None, 'None'] else 0.0
+            dividend_per_share = float(overview.get('dividendRate', 0.0)) if overview.get('dividendRate') else 0.0
 
             annual_dividend = dividend_per_share * shares
             total_annual_dividend += annual_dividend
@@ -841,7 +844,7 @@ class StockDetailWindow(QWidget):
         current_price = get_current_price(self.stock_data['symbol'])
 
         # USD Calculations
-        total_value_usd = sum(txn['Consideration $'] for txn in self.stock_data['transactions'])
+        total_value_usd = sum(txn['Consideration $'] for txn in self.stock_data.get('transactions', []))
         current_value_usd = current_price * total_shares
         profit_loss_usd = current_value_usd - total_value_usd
         profit_loss_percent_usd = (profit_loss_usd / total_value_usd) * 100 if total_value_usd else 0
@@ -882,7 +885,7 @@ class StockDetailWindow(QWidget):
 
         return metrics
 
-   
+
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
