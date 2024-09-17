@@ -159,9 +159,9 @@ class DividendTracker(QMainWindow):
             self.summary_values[label_text] = value_label
 
     def create_holdings_table(self):
-    # Table Widget
+        # Table Widget
         self.table = QTableWidget()
-        self.table.setColumnCount(25)
+        self.table.setColumnCount(28)  # Increased from 25 to 28
         self.table.setHorizontalHeader(TextWrappingHeader(self.table))
         self.table.setHorizontalHeaderLabels([
             'Sector', 'Company Name', 'Ticker', '# of Shares', 'Avg Purchase Price',
@@ -169,6 +169,7 @@ class DividendTracker(QMainWindow):
             'Profit/Loss + Div ($)', 'Profit/Loss + Div (%)', 'Dividends Received ($)',
             'EUR Cash Invested', 'Current EUR Value', 'Profit/Loss (€)', 'Profit/Loss (%)',
             'Profit/Loss + Div (€)', 'Profit/Loss + Div (%)', 'Dividends Received (€)',
+            'Current Div.Yield', 'Current Y-o-C', 'Actual Dividend Growth',
             'Portfolio Alloc % Book Value', 'Portfolio Alloc % Live Value', 'Sector Alloc % Book Value',
             'Sector Alloc % Live Value', '% Dividends in Portfolio'
         ])
@@ -280,6 +281,34 @@ class DividendTracker(QMainWindow):
             annual_dividend = dividend_per_share * shares
             dividend_yield = (dividend_per_share / current_price) * 100 if current_price > 0 else 0.0
 
+            # Current Yield on Cost
+            current_yoc = (dividend_per_share / cost_basis) * 100 if cost_basis > 0 else 0.0
+
+            # Calculate Actual Dividend Growth
+            dividends_df = get_dividend_events(symbol)
+            if not dividends_df.empty:
+                dividends_df['Date'] = pd.to_datetime(dividends_df['Date'])
+                dividends_df['Year'] = dividends_df['Date'].dt.year
+                dividends_per_year = dividends_df.groupby('Year')['Dividend'].sum().sort_index()
+                if len(dividends_per_year) >= 2:
+                    last_year = dividends_per_year.index[-1]
+                    prev_year = dividends_per_year.index[-2]
+                    last_year_div = dividends_per_year[last_year]
+                    prev_year_div = dividends_per_year[prev_year]
+                    if prev_year_div != 0:
+                        actual_dividend_growth = ((last_year_div - prev_year_div) / prev_year_div) * 100
+                    else:
+                        actual_dividend_growth = None
+                else:
+                    actual_dividend_growth = None
+            else:
+                actual_dividend_growth = None
+
+            if actual_dividend_growth is not None:
+                actual_dividend_growth_str = f"{actual_dividend_growth:.2f}%"
+            else:
+                actual_dividend_growth_str = 'N/A'
+
             # Currency conversions (Assuming 1 USD = 0.9 EUR for example)
             exchange_rate = 0.9  # Replace with actual rate or fetch dynamically
             eur_cash_invested = book_value * exchange_rate
@@ -321,6 +350,9 @@ class DividendTracker(QMainWindow):
                 f"€{eur_unrealized_gain + stock.get('total_dividends', 0.0) * exchange_rate:.2f}",
                 f"{eur_total_return:.2f}%",
                 f"€{stock.get('total_dividends', 0.0) * exchange_rate:.2f}",
+                f"{dividend_yield:.2f}%",
+                f"{current_yoc:.2f}%",
+                actual_dividend_growth_str,
                 '',  # Portfolio Alloc % Book Value (to be calculated)
                 '',  # Portfolio Alloc % Live Value (to be calculated)
                 '',  # Sector Alloc % Book Value (to be calculated)
@@ -340,21 +372,21 @@ class DividendTracker(QMainWindow):
             # Portfolio Allocation %
             portfolio_alloc_book = (book_value / total_book_value * 100) if total_book_value > 0 else 0
             portfolio_alloc_live = (market_value / total_current_value * 100) if total_current_value > 0 else 0
-            self.table.setItem(row, 20, QTableWidgetItem(f"{portfolio_alloc_book:.2f}%"))
-            self.table.setItem(row, 21, QTableWidgetItem(f"{portfolio_alloc_live:.2f}%"))
+            self.table.setItem(row, 23, QTableWidgetItem(f"{portfolio_alloc_book:.2f}%"))
+            self.table.setItem(row, 24, QTableWidgetItem(f"{portfolio_alloc_live:.2f}%"))
 
             # Sector Allocation %
             sector_book_value = sector_allocations[sector]['book_value']
             sector_current_value = sector_allocations[sector]['current_value']
             sector_alloc_book = (book_value / sector_book_value * 100) if sector_book_value > 0 else 0
             sector_alloc_live = (market_value / sector_current_value * 100) if sector_current_value > 0 else 0
-            self.table.setItem(row, 22, QTableWidgetItem(f"{sector_alloc_book:.2f}%"))
-            self.table.setItem(row, 23, QTableWidgetItem(f"{sector_alloc_live:.2f}%"))
+            self.table.setItem(row, 25, QTableWidgetItem(f"{sector_alloc_book:.2f}%"))
+            self.table.setItem(row, 26, QTableWidgetItem(f"{sector_alloc_live:.2f}%"))
 
             # % Dividends in Portfolio
             total_dividends_row = float(self.table.item(row, 12).text().replace('$', ''))
             dividends_in_portfolio = (total_dividends_row / total_dividends) * 100 if total_dividends > 0 else 0
-            self.table.setItem(row, 24, QTableWidgetItem(f"{dividends_in_portfolio:.2f}%"))
+            self.table.setItem(row, 27, QTableWidgetItem(f"{dividends_in_portfolio:.2f}%"))
 
     def update_portfolio_summary(self):
         # Calculate summary values
@@ -455,7 +487,7 @@ class DividendTracker(QMainWindow):
                     stock['shares'] = total_shares
                     stock['cost_basis'] = new_cost_basis_per_share
                     # Append transaction
-                    stock['transactions'].append(transaction)
+                    stock.setdefault('transactions', []).append(transaction)
                     found = True
                     break
             if not found:
@@ -491,7 +523,7 @@ class DividendTracker(QMainWindow):
                 if stock['symbol'] == symbol:
                     stock['total_dividends'] = stock.get('total_dividends', 0.0) + amount
                     # Append dividend record
-                    stock['dividends'].append(dividend_record)
+                    stock.setdefault('dividends', []).append(dividend_record)
                     break
             else:
                 # If the stock is not in the portfolio, you might want to add it or skip
@@ -501,9 +533,6 @@ class DividendTracker(QMainWindow):
         self.update_table()
         self.update_portfolio_summary()
         self.update_portfolio_ratios()
-
-
-
 
     def import_portfolio(self):
         options = QFileDialog.Options()
