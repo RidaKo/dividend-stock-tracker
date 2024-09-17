@@ -155,7 +155,7 @@ class DividendTracker(QMainWindow):
             self.summary_values[label_text] = value_label
 
     def create_holdings_table(self):
-        # Table Widget
+    # Table Widget
         self.table = QTableWidget()
         self.table.setColumnCount(25)
         self.table.setHorizontalHeader(TextWrappingHeader(self.table))
@@ -171,6 +171,10 @@ class DividendTracker(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         # Adjust the row height to accommodate wrapped text
         self.table.horizontalHeader().setFixedHeight(60)
+
+        # Connect double-click signal to open detailed view
+        self.table.itemDoubleClicked.connect(self.open_stock_details)
+
 
     def create_portfolio_ratios(self):
         # Labels for Portfolio Ratios
@@ -415,6 +419,27 @@ class DividendTracker(QMainWindow):
             company_name = overview.get('Name', '')
             sector = overview.get('Sector', '')
 
+            # Get exchange rate
+            exchange_rate_str = row.get('Exchange rate', '')
+            try:
+                exchange_rate = float(exchange_rate_str)
+            except (ValueError, TypeError):
+                exchange_rate = 1.0  # Default exchange rate
+
+            # Create a transaction record
+            transaction = {
+                'Purchase Date': pd.to_datetime(row['Time']).date(),
+                'Order ID': row.get('ID', ''),
+                'ISIN': row.get('ISIN', ''),
+                'Purchase Price $': float(row['Price / share']) if pd.notnull(row['Price / share']) else 0.0,
+                'Purchase Price €': total_cost,  # Assuming total_cost is in EUR
+                'Qty. Shares': shares,
+                'Value EUR': total_cost,
+                'Currency exchange': exchange_rate,
+                'Broker FX Fee EUR': currency_conversion_fee,
+                'Consideration $': total_cost / exchange_rate if exchange_rate else total_cost
+            }
+
             # Update portfolio
             found = False
             for stock in self.portfolio:
@@ -426,6 +451,8 @@ class DividendTracker(QMainWindow):
                     new_cost_basis_per_share = total_cost_basis / total_shares
                     stock['shares'] = total_shares
                     stock['cost_basis'] = new_cost_basis_per_share
+                    # Append transaction
+                    stock['transactions'].append(transaction)
                     found = True
                     break
             if not found:
@@ -436,7 +463,9 @@ class DividendTracker(QMainWindow):
                     'sector': sector,
                     'shares': shares,
                     'cost_basis': cost_basis_per_share,
-                    'total_dividends': 0.0
+                    'total_dividends': 0.0,
+                    'transactions': [transaction],
+                    'dividends': []
                 })
 
         # Process 'Dividend' transactions
@@ -446,17 +475,20 @@ class DividendTracker(QMainWindow):
             date = pd.to_datetime(row['Time']).date()
             amount = float(row['Total']) if pd.notnull(row['Total']) else 0.0
 
-            # Add to dividend history
-            self.dividend_history.append({
+            # Create dividend record
+            dividend_record = {
                 'Date': date,
-                'Symbol': symbol,
-                'Dividend': amount
-            })
+                'Dividend Received $': amount,
+                'Dividend Received EUR': amount * 0.9,  # Assuming exchange rate
+                'Comments': row.get('Notes', '')  # Adjusted from 'Comments' to 'Notes'
+            }
 
             # Update total dividends in portfolio
             for stock in self.portfolio:
                 if stock['symbol'] == symbol:
                     stock['total_dividends'] = stock.get('total_dividends', 0.0) + amount
+                    # Append dividend record
+                    stock['dividends'].append(dividend_record)
                     break
             else:
                 # If the stock is not in the portfolio, you might want to add it or skip
@@ -466,6 +498,9 @@ class DividendTracker(QMainWindow):
         self.update_table()
         self.update_portfolio_summary()
         self.update_portfolio_ratios()
+
+
+
 
     def import_portfolio(self):
         options = QFileDialog.Options()
@@ -722,6 +757,132 @@ class DividendTracker(QMainWindow):
         layout.addWidget(table)
         self.dividend_window.setLayout(layout)
         self.dividend_window.show()
+
+    def open_stock_details(self, item):
+        row = item.row()
+        symbol = self.table.item(row, 2).text()  # Assuming the 'Ticker' column is at index 2
+        # Find the stock data
+        stock_data = next((stock for stock in self.portfolio if stock['symbol'] == symbol), None)
+        if stock_data:
+            self.stock_detail_window = StockDetailWindow(stock_data)
+            self.stock_detail_window.show()
+
+class StockDetailWindow(QWidget):
+    def __init__(self, stock_data):
+        super().__init__()
+        self.setWindowTitle(f"Details for {stock_data['symbol']}")
+        self.stock_data = stock_data
+        self.initUI()
+
+    def initUI(self):
+        layout = QVBoxLayout()
+
+        # Display calculated metrics
+        metrics_layout = QGridLayout()
+        metrics = self.calculate_metrics()
+        row = 0
+        for key, value in metrics.items():
+            metrics_layout.addWidget(QLabel(f"{key}:"), row, 0)
+            metrics_layout.addWidget(QLabel(str(value)), row, 1)
+            row += 1
+        layout.addLayout(metrics_layout)
+
+        # Transactions Table
+        transactions_label = QLabel("Transactions:")
+        layout.addWidget(transactions_label)
+        transactions_table = QTableWidget()
+        transactions_table.setColumnCount(8)
+        transactions_table.setHorizontalHeaderLabels([
+            'Purchase Date', 'Order ID', 'ISIN', 'Purchase Price $',
+            'Purchase Price €', 'Qty. Shares', 'Value EUR', 'Broker FX Fee EUR'
+        ])
+        transactions = self.stock_data.get('transactions', [])
+        transactions_table.setRowCount(len(transactions))
+        for i, txn in enumerate(transactions):
+            transactions_table.setItem(i, 0, QTableWidgetItem(str(txn['Purchase Date'])))
+            transactions_table.setItem(i, 1, QTableWidgetItem(txn['Order ID']))
+            transactions_table.setItem(i, 2, QTableWidgetItem(txn['ISIN']))
+            transactions_table.setItem(i, 3, QTableWidgetItem(f"${txn['Purchase Price $']:.2f}"))
+            transactions_table.setItem(i, 4, QTableWidgetItem(f"€{txn['Purchase Price €']:.2f}"))
+            transactions_table.setItem(i, 5, QTableWidgetItem(f"{txn['Qty. Shares']}"))
+            transactions_table.setItem(i, 6, QTableWidgetItem(f"€{txn['Value EUR']:.2f}"))
+            transactions_table.setItem(i, 7, QTableWidgetItem(f"€{txn['Broker FX Fee EUR']:.2f}"))
+        transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(transactions_table)
+
+        # Dividends Table
+        dividends_label = QLabel("Dividends:")
+        layout.addWidget(dividends_label)
+        dividends_table = QTableWidget()
+        dividends_table.setColumnCount(4)
+        dividends_table.setHorizontalHeaderLabels([
+            'Date', 'Dividend Received $', 'Dividend Received EUR', 'Comments'
+        ])
+        dividends = self.stock_data.get('dividends', [])
+        dividends_table.setRowCount(len(dividends))
+        for i, div in enumerate(dividends):
+            dividends_table.setItem(i, 0, QTableWidgetItem(str(div['Date'])))
+            dividends_table.setItem(i, 1, QTableWidgetItem(f"${div['Dividend Received $']:.2f}"))
+            dividends_table.setItem(i, 2, QTableWidgetItem(f"€{div['Dividend Received EUR']:.2f}"))
+            comments = div.get('Comments', '')
+            if pd.isna(comments):
+                comments = ''
+            dividends_table.setItem(i, 3, QTableWidgetItem(comments))
+        dividends_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(dividends_table)
+
+        self.setLayout(layout)
+
+    def calculate_metrics(self):
+        # Perform calculations similar to the data you provided
+
+        average_purchase_price = self.stock_data['cost_basis']
+        total_shares = self.stock_data['shares']
+        current_price = get_current_price(self.stock_data['symbol'])
+
+        # USD Calculations
+        total_value_usd = sum(txn['Consideration $'] for txn in self.stock_data['transactions'])
+        current_value_usd = current_price * total_shares
+        profit_loss_usd = current_value_usd - total_value_usd
+        profit_loss_percent_usd = (profit_loss_usd / total_value_usd) * 100 if total_value_usd else 0
+        total_dividends_usd = self.stock_data.get('total_dividends', 0.0)
+        profit_loss_with_dividends_usd = profit_loss_usd + total_dividends_usd
+        total_profit_loss_percent_usd = (profit_loss_with_dividends_usd / total_value_usd) * 100 if total_value_usd else 0
+
+        # EUR Calculations (assuming exchange rate)
+        exchange_rate = 0.9  # Adjust exchange rate as needed
+        total_value_eur = total_value_usd * exchange_rate
+        current_value_eur = current_value_usd * exchange_rate
+        profit_loss_eur = current_value_eur - total_value_eur
+        profit_loss_percent_eur = (profit_loss_eur / total_value_eur) * 100 if total_value_eur else 0
+        total_dividends_eur = total_dividends_usd * exchange_rate
+        profit_loss_with_dividends_eur = profit_loss_eur + total_dividends_eur
+        total_profit_loss_percent_eur = (profit_loss_with_dividends_eur / total_value_eur) * 100 if total_value_eur else 0
+
+        # Build the metrics dictionary
+        metrics = {
+            'Average Purchase Price $': f"${average_purchase_price:.2f}",
+            'Total Shares': total_shares,
+            'Live Price $': f"${current_price:.2f}",
+
+            'Total Value $': f"${total_value_usd:.2f}",
+            'Current Value $': f"${current_value_usd:.2f}",
+            'Profit/Loss (price) $': f"${profit_loss_usd:.2f}",
+            'Profit/Loss (%) $': f"{profit_loss_percent_usd:.2f}%",
+            'Profit/Loss + Dividends $': f"${profit_loss_with_dividends_usd:.2f}",
+            'Total Profit/Loss (%) $': f"{total_profit_loss_percent_usd:.2f}%",
+
+            'Total Value €': f"€{total_value_eur:.2f}",
+            'Current Value €': f"€{current_value_eur:.2f}",
+            'Profit/Loss (price) €': f"€{profit_loss_eur:.2f}",
+            'Profit/Loss (%) €': f"{profit_loss_percent_eur:.2f}%",
+            'Profit/Loss + Dividends €': f"€{profit_loss_with_dividends_eur:.2f}",
+            'Total Profit/Loss (%) €': f"{total_profit_loss_percent_eur:.2f}%"
+        }
+
+        return metrics
+
+   
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
